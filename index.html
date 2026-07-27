@@ -392,18 +392,13 @@ function renderLoop(){
 }
 renderLoop();
 
-// ============ mediapipe hands ============
-const hands = new Hands({ locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
-hands.setOptions({ maxNumHands:2, modelComplexity:1, minDetectionConfidence:0.65, minTrackingConfidence:0.6 });
-hands.onResults(r=>{ latestHandLandmarks = r.multiHandLandmarks || []; });
-
-const camera = new Camera(video, {
-  onFrame: async ()=>{ await hands.send({image:video}); },
-  width:640, height:480
-});
-camera.start().catch(()=>{ statusEl.textContent = "Could not open camera - check permissions"; });
-
 // ============ top bar interactions ============
+// NOTE: these bindings are set up BEFORE the mediapipe hands/camera init below.
+// On some devices (iPad Safari in particular) mediapipe can throw or fail to
+// load; since this is all one <script> block, an uncaught error there used to
+// stop every line after it from ever running - which silently broke the
+// filter buttons, the crossword toggle, the shutter button, etc. Binding the
+// UI first means those keep working even if hand-tracking fails.
 function setActivePill(group, activeId){
   group.forEach(id=>document.getElementById(id).classList.remove('active'));
   document.getElementById(activeId).classList.add('active');
@@ -414,6 +409,33 @@ function setActivePill(group, activeId){
     setActivePill(['filterNormal','filterBW','filterSoft'], id);
   });
 });
+
+// ============ mediapipe hands ============
+// Everything in this block is wrapped so a failure here (missing WASM/SIMD
+// support, camera constraints not matching what the device offers, etc. -
+// all seen on iPad Safari) can't take down the rest of the app. Without
+// hand tracking, the finger words and the pinch-burst "falling stars" just
+// won't appear (latestHandLandmarks stays empty), but everything else keeps
+// working.
+try {
+  const hands = new Hands({ locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  hands.setOptions({ maxNumHands:2, modelComplexity:1, minDetectionConfidence:0.65, minTrackingConfidence:0.6 });
+  hands.onResults(r=>{ latestHandLandmarks = r.multiHandLandmarks || []; });
+
+  const camera = new Camera(video, {
+    onFrame: async ()=>{
+      try { await hands.send({image:video}); }
+      catch(e){ /* swallow per-frame errors so the camera loop keeps running */ }
+    },
+    width:640, height:480
+  });
+  camera.start().catch(err=>{
+    console.warn('Hand-tracking camera failed to start:', err);
+    statusEl.textContent = "Could not open camera - check permissions";
+  });
+} catch(err){
+  console.warn('Hand-tracking unavailable on this device:', err);
+}
 
 
 // ============ single-shot capture -> composited into decorative frame ============
