@@ -357,6 +357,20 @@ function drawCrossword(){
   drawCrosswordOn(ctx, canvas.width, canvas.height, lastGridDims);
 }
 
+// ============ video filter buffer ============
+// Safari (iPadOS in particular) has a known bug: ctx.filter is silently
+// ignored when the drawImage() source is a <video> element directly - the
+// button highlights, currentFilter changes, but the pixels never change.
+// Filter DOES work when the source is a canvas/image instead. So we draw the
+// raw video frame into this small offscreen canvas first (no filter), then
+// draw *that* canvas onto the real target with the filter applied.
+const videoBuf = document.createElement('canvas');
+const videoBufCtx = videoBuf.getContext('2d');
+function updateVideoBuf(vw, vh){
+  if(videoBuf.width !== vw || videoBuf.height !== vh){ videoBuf.width = vw; videoBuf.height = vh; }
+  videoBufCtx.drawImage(video, 0, 0, vw, vh);
+}
+
 // ============ main render loop ============
 function applyCanvasFilter(){
   if(currentFilter === 'bw') ctx.filter = 'grayscale(1) contrast(1.05) brightness(1.05)';
@@ -373,10 +387,11 @@ function renderLoop(){
     const offsetX = (canvas.width-dw)/2, offsetY=(canvas.height-dh)/2;
     videoTransform = { scale, offsetX, offsetY, vw, vh };
 
+    updateVideoBuf(vw, vh);
     applyCanvasFilter();
     ctx.save();
     ctx.translate(canvas.width, 0); ctx.scale(-1,1); // mirror selfie
-    ctx.drawImage(video, canvas.width-dw-offsetX, offsetY, dw, dh);
+    ctx.drawImage(videoBuf, canvas.width-dw-offsetX, offsetY, dw, dh);
     ctx.restore();
     ctx.filter = 'none';
 
@@ -469,10 +484,11 @@ async function singleCapture(){
   const scale = Math.max(CAPTURE_W/vw, CAPTURE_H/vh);
   const dw = vw*scale, dh = vh*scale;
   const offsetX = (CAPTURE_W-dw)/2, offsetY = (CAPTURE_H-dh)/2;
+  updateVideoBuf(vw, vh);
   applyCanvasFilterTo(sctx);
   sctx.save();
   sctx.translate(CAPTURE_W, 0); sctx.scale(-1,1); // mirror selfie, matches live preview
-  sctx.drawImage(video, CAPTURE_W-dw-offsetX, offsetY, dw, dh);
+  sctx.drawImage(videoBuf, CAPTURE_W-dw-offsetX, offsetY, dw, dh);
   sctx.restore();
   sctx.filter = 'none';
 
@@ -654,6 +670,7 @@ document.getElementById('recBtn').addEventListener('click', ()=>{
     };
     mediaRecorder.start();
     isRecording = true;
+    recordFrameStartTime = performance.now();
     btn.classList.add('recording'); btn.textContent='⏹';
   } else {
     mediaRecorder.stop();
@@ -662,16 +679,25 @@ document.getElementById('recBtn').addEventListener('click', ()=>{
   }
 });
 
-// Draw the decorative frame over the live canvas (cover-fit) while recording,
-// so it gets baked into the captured video stream.
+// Draw the decorative frame over the live canvas while recording, so it
+// gets baked into the captured video stream.
+let recordFrameStartTime = 0;
+const FRAME_FADE_MS = 350; // fade the frame in instead of popping in suddenly
 function drawFrameOverlayIfRecording(){
   if(!isRecording || !FRAME_IMG.complete || !FRAME_IMG.naturalWidth) return;
   const fw = FRAME_IMG.naturalWidth, fh = FRAME_IMG.naturalHeight;
-  // Use contain-fit (not cover) so the decorative border is never cropped off.
-  const scale = Math.min(canvas.width/fw, canvas.height/fh);
+  // Use cover-fit (not contain) so the frame fills the canvas edge to edge -
+  // contain-fit left empty gaps on the sides whenever the frame's aspect
+  // ratio didn't exactly match the canvas's.
+  const scale = Math.max(canvas.width/fw, canvas.height/fh);
   const dw = fw*scale, dh = fh*scale;
   const ox = (canvas.width-dw)/2, oy = (canvas.height-dh)/2;
+  const elapsed = performance.now() - recordFrameStartTime;
+  const alpha = Math.min(1, elapsed / FRAME_FADE_MS);
+  ctx.save();
+  ctx.globalAlpha = alpha;
   ctx.drawImage(FRAME_IMG, ox, oy, dw, dh);
+  ctx.restore();
 }
 
 // ============ combine captured frames into GIF ============
